@@ -33,11 +33,13 @@ dependencies = [
     { name = "cyclopts" },
     { name = "grimp" },
     { name = "loguru" },
+    { name = "markdown-it-py" },
     { name = "networkx" },
     { name = "pyan3" },
     { name = "pydot" },
     { name = "radon" },
     { name = "rich" },
+    { name = "ruff" },
     { name = "vulture" },
 ]
 
@@ -58,11 +60,13 @@ requires-dist = [
     { name = "cyclopts", specifier = ">=3" },
     { name = "grimp", specifier = ">=3" },
     { name = "loguru", specifier = ">=0.7" },
+    { name = "markdown-it-py", specifier = ">=3" },
     { name = "networkx", specifier = ">=3" },
     { name = "pyan3", specifier = ">=2.2" },
     { name = "pydot", specifier = ">=3" },
     { name = "radon", specifier = ">=6" },
     { name = "rich", specifier = ">=13" },
+    { name = "ruff", specifier = ">=0.15" },
     { name = "vulture", specifier = ">=2.14" },
 ]
 

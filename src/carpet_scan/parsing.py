@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pydot
 
-from carpet_scan.model import PyanNode, RadonBlock, VultureFinding
+from carpet_scan.model import PrivateAccess, PyanNode, RadonBlock, VultureFinding
 
-# radon's JSON shape, declared so the parse is checked rather than cast away.
+# radon's and ruff's JSON shapes, declared so the parse is checked rather than cast away.
 type _RadonCc = dict[str, list[dict[str, object]]]
 type _RadonMi = dict[str, dict[str, object]]
+type _RuffJson = list[dict[str, object]]
 
 
 def _number(value: object) -> float:
@@ -21,6 +23,13 @@ def _number(value: object) -> float:
 
 def _unquote(value: object) -> str:
     return str(value or "").strip('"')
+
+
+def _lineno(location: object) -> int:
+    """Ruff nests the line under ``location.row``; the JSON is untyped, so narrow it here."""
+    if not isinstance(location, dict):
+        return 0
+    return int(_number(cast("dict[str, object]", location).get("row")))
 
 
 def _pyan_elements(graph: pydot.Dot) -> tuple[list[pydot.Node], list[pydot.Edge]]:
@@ -98,6 +107,28 @@ def parse_vulture(text: str) -> list[VultureFinding]:
                 kind=kind.strip(),
                 name=name,
                 confidence=int(confidence) if confidence.isdigit() else 0,
+            )
+        )
+    return findings
+
+
+def parse_ruff_private(text: str) -> list[PrivateAccess]:
+    """`ruff check --output-format json` -> one row per SLF001/PLC2701 finding.
+
+    Both rules name the private member in the first backticked span of the message — SLF001 as
+    ``Private member accessed: `_x` `` and PLC2701 as ``Private name import `_x` from ...``.
+    """
+    raw: _RuffJson = json.loads(text or "[]")
+    findings: list[PrivateAccess] = []
+    for entry in raw:
+        message = str(entry.get("message", ""))
+        quoted = message.split("`")
+        findings.append(
+            PrivateAccess(
+                path=Path(str(entry.get("filename", ""))),
+                lineno=_lineno(entry.get("location")),
+                code=str(entry.get("code", "")),
+                name=quoted[1] if len(quoted) > 1 else message,
             )
         )
     return findings

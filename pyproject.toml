@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "carpet-scan"
 version = "0.1.0"
-description = "Carpet diagnostics: aggregates pyan3, vulture, radon and grimp into module-level quality tables and a Markdown report."
+description = "Carpet diagnostics: aggregates pyan3, vulture, radon, grimp and ruff into module-level quality tables and a Markdown/HTML report."
 readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
@@ -13,11 +13,12 @@ authors = [
     { name = "Witold Wolski", email = "wew@fgcz.ethz.ch" },
 ]
 dependencies = [
-    # Aggregated tools. pyan3/vulture/radon are invoked as subprocesses and must be on PATH;
-    # grimp/networkx/pydot are imported.
+    # Aggregated tools. pyan3/vulture/radon/ruff are invoked as subprocesses and must be on
+    # PATH; grimp/networkx/pydot are imported.
     "pyan3>=2.2",
     "vulture>=2.14",
     "radon>=6",
+    "ruff>=0.15",
     "grimp>=3",
     "networkx>=3",
     "pydot>=3",
@@ -25,6 +26,9 @@ dependencies = [
     "cyclopts>=3",
     "loguru>=0.7",
     "rich>=13",
+    # Markdown -> HTML for the optional browser rendering. Already present via rich; declared
+    # directly because carpet_scan imports it.
+    "markdown-it-py>=3",
 ]
 
 [project.scripts]
@@ -103,3 +107,8 @@ skip_covered = true
 
 [tool.deptry]
 known_first_party = ["carpet_scan"]
+
+[tool.deptry.per_rule_ignores]
+# Real dependencies, invoked as subprocesses rather than imported, so deptry cannot see the use.
+# They must be installed: the scan shells out to them by name on PATH.
+DEP002 = ["pyan3", "vulture", "radon", "ruff"]

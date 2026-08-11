@@ -13,6 +13,8 @@ from carpet_scan.model import (
     MIN_PUBLICS_FOR_SURFACE_REPORT,
     DepthRow,
     FolderRow,
+    PrivateAccess,
+    PrivateRow,
     PyanNode,
     RadonBlock,
     SurfaceRow,
@@ -182,6 +184,29 @@ def depth_rows(
     return sorted(rows, key=lambda r: (-r.depth, r.module))
 
 
+def private_rows(accesses: list[PrivateAccess]) -> list[PrivateRow]:
+    """Cross-boundary private access per accessing module, from Ruff's findings.
+
+    Grouped by the module doing the reaching rather than the one being reached into, because that
+    is the file that has to change — and because a test reaching into a private function is the
+    mechanism that keeps a carpet alive: the function looks used to a coverage gate.
+    """
+    grouped: dict[str, list[PrivateAccess]] = {}
+    for access in accesses:
+        grouped.setdefault(_dotted(access.path), []).append(access)
+
+    rows = [
+        PrivateRow(
+            module=module,
+            attribute=sum(1 for a in found if a.code == "SLF001"),
+            imported=sum(1 for a in found if a.code == "PLC2701"),
+            names=sorted({a.name for a in found}),
+        )
+        for module, found in sorted(grouped.items())
+    ]
+    return sorted(rows, key=lambda r: (-r.imported, -r.total, r.module))
+
+
 def folder_rows(package: str) -> list[FolderRow]:
     """Sibling-import depth per folder, from grimp's module graph."""
     graph = grimp.build_graph(package)
@@ -215,3 +240,16 @@ def folder_rows(package: str) -> list[FolderRow]:
 
 def _resolve(path: Path | None) -> Path:
     return path.resolve() if path else Path()
+
+
+def _dotted(path: Path) -> str:
+    """A file path as a dotted module label, matching the keys the other tables use.
+
+    Ruff reports absolute paths; relative-to-cwd keeps the label comparable with pyan3's module
+    names so one prefix strip serves every table.
+    """
+    try:
+        relative = path.resolve().relative_to(Path.cwd())
+    except ValueError:
+        relative = path
+    return ".".join(relative.with_suffix("").parts)

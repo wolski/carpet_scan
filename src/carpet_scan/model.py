@@ -81,6 +81,16 @@ class RadonBlock:
 
 
 @dataclass(frozen=True)
+class PrivateAccess:
+    """One Ruff finding: a private name touched from outside the module that defines it."""
+
+    path: Path
+    lineno: int
+    code: str
+    name: str
+
+
+@dataclass(frozen=True)
 class ToolVersions:
     """Versions of the tools that produced a report, for provenance."""
 
@@ -88,6 +98,7 @@ class ToolVersions:
     vulture: str
     radon: str
     grimp: str
+    ruff: str
 
 
 @dataclass(frozen=True)
@@ -107,8 +118,13 @@ class ScanConfig:
 
     @property
     def command(self) -> str:
+        """The invocation that reproduces this report.
+
+        `uv run`, not `uvx`: grimp resolves the target package through the Python path, so the
+        scan must run inside the target project's own environment.
+        """
         tests = f" --tests {self.tests}" if self.tests else ""
-        return f"uv run python scripts/carpet_scan.py {self.src}{tests}"
+        return f"uv run carpet-scan {self.src}{tests}"
 
 
 @dataclass(frozen=True)
@@ -135,6 +151,23 @@ class SurfaceRow:
     @property
     def share(self) -> float:
         return self.no_external / self.publics if self.publics else 0.0
+
+
+@dataclass(frozen=True)
+class PrivateRow:
+    """Check 1 — one module's reach into private names defined elsewhere.
+
+    Keyed by the module doing the reaching, which is the one that has to change.
+    """
+
+    module: str
+    attribute: int
+    imported: int
+    names: list[str] = field(default_factory=list[str])
+
+    @property
+    def total(self) -> int:
+        return self.attribute + self.imported
 
 
 @dataclass(frozen=True)

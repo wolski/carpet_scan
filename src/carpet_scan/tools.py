@@ -74,6 +74,33 @@ def run_radon(src: Path, metric: str) -> str:
     return _capture(_tool("radon", metric, str(src), "-j"))
 
 
+def run_ruff_private(src: Path, tests: Path | None) -> str:
+    """Cross-module private access, as JSON.
+
+    Two rules, one per form: ``SLF001`` catches ``other._private(...)`` and ``PLC2701`` catches
+    ``from other import _private``. ``--preview`` is required — ``PLC2701`` is preview-gated, and
+    without the flag Ruff prints "Selection PLC2701 has no effect" and reports nothing.
+
+    The project's own Ruff configuration still applies, so a ``per-file-ignores`` entry excusing
+    these rules is respected. That is deliberate: the count then measures what policy does *not*
+    already excuse.
+    """
+    targets = [str(src), *([str(tests)] if tests else [])]
+    return _capture(
+        _tool(
+            "ruff",
+            "check",
+            *targets,
+            "--select",
+            "SLF001,PLC2701",
+            "--preview",
+            "--output-format",
+            "json",
+            "--no-cache",
+        )
+    )
+
+
 def infer_package(src: Path) -> str:
     """The single importable package under ``src``.
 
@@ -108,4 +135,5 @@ def tool_versions() -> ToolVersions:
         vulture=version("vulture"),
         radon=version("radon"),
         grimp=version("grimp"),
+        ruff=version("ruff"),
     )

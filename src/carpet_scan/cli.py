@@ -9,15 +9,22 @@ from typing import Annotated
 import cyclopts
 from loguru import logger
 
-from carpet_scan.measure import depth_rows, folder_rows, surface_rows
+from carpet_scan.measure import depth_rows, folder_rows, private_rows, surface_rows
 from carpet_scan.model import IGNORED_DECORATORS, SURFACE_SKIP, ScanConfig, TreeLayout
-from carpet_scan.parsing import parse_pyan, parse_radon_cc, parse_radon_mi, parse_vulture
-from carpet_scan.report import render_markdown, render_terminal
+from carpet_scan.parsing import (
+    parse_pyan,
+    parse_radon_cc,
+    parse_radon_mi,
+    parse_ruff_private,
+    parse_vulture,
+)
+from carpet_scan.report import render_html, render_markdown, render_terminal
 from carpet_scan.tools import (
     ToolFailure,
     infer_package,
     run_pyan,
     run_radon,
+    run_ruff_private,
     run_vulture,
     tool_versions,
 )
@@ -55,9 +62,10 @@ def scan(
     tests: Path | None = None,
     package: str | None = None,
     report: Path = Path("build/carpet-report.md"),
+    html: Path | None = None,
     tuning: Annotated[Tuning, cyclopts.Parameter(name="*")] | None = None,
 ) -> None:
-    """Aggregate pyan3, vulture, radon and grimp into carpet diagnostics. Always exits 0.
+    """Aggregate pyan3, vulture, radon, grimp and ruff into carpet diagnostics. Always exits 0.
 
     Parameters
     ----------
@@ -70,11 +78,14 @@ def scan(
         exactly one package directory.
     report
         Markdown report path, holding the detail the terminal tables omit.
+    html
+        Optional self-contained HTML rendering of the same report, for reading the wide tables
+        in a browser. The Markdown stays the diffable artifact.
     """
     tuning = tuning or Tuning()
     package = package or infer_package(src)
     report.parent.mkdir(parents=True, exist_ok=True)
-    logger.info("running pyan3, vulture, radon, grimp")
+    logger.info("running pyan3, vulture, radon, grimp, ruff")
 
     try:
         nodes, edges = parse_pyan(run_pyan(src, tests, report.parent / "pyan.dot"))
@@ -85,6 +96,7 @@ def scan(
     dead = parse_vulture(run_vulture(src, tests, tuning.ignore_decorators))
     complexity = parse_radon_cc(run_radon(src, "cc"))
     maintainability = parse_radon_mi(run_radon(src, "mi"))
+    private = private_rows(parse_ruff_private(run_ruff_private(src, tests)))
 
     layout = TreeLayout.of(src, tests)
     dead_keys = {(f.path.resolve(), f.name) for f in dead}
@@ -113,16 +125,22 @@ def scan(
         ignore_decorators=tuning.ignore_decorators,
     )
 
-    render_terminal(surface, depth, folders, dead, config)
-    report.write_text(render_markdown(surface, depth, folders, dead, config), encoding="utf-8")
+    render_terminal(surface, depth, folders, dead, private, config)
+    markdown = render_markdown(surface, depth, folders, dead, private, config)
+    report.write_text(markdown, encoding="utf-8")
+    if html is not None:
+        html.parent.mkdir(parents=True, exist_ok=True)
+        html.write_text(render_html(markdown, config), encoding="utf-8")
 
     home = sum(len(r.home_only) for r in surface)
     gone = sum(len(r.unused) for r in surface)
     logger.info(
         f"{config.modules} modules | {home} publics used only at home, {gone} confirmed dead "
         f"| {len(depth)} at call depth >= {tuning.warn_depth} | {len(dead)} vulture findings"
+        f" | {sum(r.total for r in private)} cross-module private accesses"
     )
-    logger.info(f"full report: {report} — flags are for triage, never act on a number alone")
+    written = f"{report}" if html is None else f"{report}, {html}"
+    logger.info(f"full report: {written} — flags are for triage, never act on a number alone")
 
 
 if __name__ == "__main__":
