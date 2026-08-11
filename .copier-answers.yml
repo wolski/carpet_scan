@@ -1,0 +1,11 @@
+# This file is managed by Copier. Do not edit it manually.
+_src_path: .
+author_email: wew@fgcz.ethz.ch
+author_name: Witold Wolski
+description: 'Carpet diagnostics: aggregates pyan3, vulture, radon and grimp into
+    module-level quality tables and a Markdown report.'
+distribution_name: carpet-scan
+license_spdx: MIT
+package_name: carpet_scan
+project_name: carpet_scan
+python_min: '3.13'
