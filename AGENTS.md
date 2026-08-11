@@ -13,6 +13,7 @@ The closest `AGENTS.md` wins. Explicit user instructions override this file.
 | Dependencies | `.venv/bin/deptry .` |
 | Tests | `.venv/bin/pytest --cov --cov-branch` |
 | Build | `uv build && .venv/bin/twine check dist/*` |
+| Self-scan | `make carpets` — this package, by itself |
 | Full gate | `make check` |
 
 ## Code conventions

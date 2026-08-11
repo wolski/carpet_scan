@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 from loguru import logger
@@ -28,13 +29,20 @@ def _capture(command: list[str], *, tolerate: tuple[int, ...] = (0, 1, 3)) -> st
 
 
 def _tool(*args: str) -> list[str]:
-    """Tools are taken from ``PATH``.
+    """Resolve a tool beside the running interpreter, falling back to ``PATH``.
 
-    They are dependencies of this package, so any environment that can run this script has them
-    installed — no package-manager invocation is baked in, which keeps the tool usable in projects
+    The tools are dependencies of this package, so they are installed in the same environment as
+    this module — which is where to look first. ``PATH`` alone is not enough: invoking the console
+    script by absolute path (``.venv/bin/carpet-scan``, the idiom in several of these Makefiles)
+    does not put that ``bin`` directory on ``PATH``, and the scan died with
+    ``FileNotFoundError: 'pyan3'``.
+
+    No package-manager invocation is baked in either way, which keeps the tool usable in projects
     that do not use uv.
     """
-    return list(args)
+    name, *rest = args
+    beside = Path(sys.executable).parent / name
+    return [str(beside) if beside.exists() else name, *rest]
 
 
 def run_pyan(src: Path, tests: Path | None, out: Path) -> str:

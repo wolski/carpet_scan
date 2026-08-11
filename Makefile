@@ -1,7 +1,7 @@
 VENV_BIN := .venv/bin
 
 .DEFAULT_GOAL := help
-.PHONY: help sync format format-check lint typecheck deps test build check clean
+.PHONY: help sync format format-check lint typecheck deps test build carpets check clean
 
 help:  ## Show developer commands
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -32,6 +32,9 @@ test:  ## Run tests with branch coverage
 build:  ## Build and validate source and wheel distributions
 	uv build
 	$(VENV_BIN)/twine check dist/*
+
+carpets:  ## Report carpet diagnostics on this package itself (never blocks)
+	$(VENV_BIN)/carpet-scan src --tests tests --html build/carpet-report.html
 
 check:  ## Run every merge-blocking quality gate
 	uv lock --check
