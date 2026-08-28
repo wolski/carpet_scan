@@ -1,5 +1,8 @@
 # Changes
 
+- 2026-08-28: Added the missing `LICENSE` file (MIT) and declared `license-files`, without which
+  uv_build shipped wheels carrying no licence text.
+
 - 2026-08-11: Add `make carpets` so the package scans itself. Clean on every check: 21 modules, no
   public function without an external caller, nothing at call depth >= 3, no dead code, no
   cross-module private access, worst folder import depth 2.

@@ -12,6 +12,7 @@ readme = "README.md"
 # whatever project it scans, and a high floor makes it unusable there (Prozor is 3.12).
 requires-python = ">=3.12"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Witold Wolski", email = "wew@fgcz.ethz.ch" },
 ]
