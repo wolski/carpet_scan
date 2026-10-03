@@ -55,3 +55,15 @@ The closest `AGENTS.md` wins. Explicit user instructions override this file.
 2. Add or update focused tests with each behavioral change.
 3. Run the smallest relevant check while iterating.
 4. Run `make check` before handoff and report its actual result.
+
+## Evidence and reports
+
+- `.carpet/runs/*/evidence.zip` is immutable producer evidence. Never overwrite an archive or
+  reconstruct its raw contents from normalized rows.
+- SQLite contains queryable producer-shaped evidence. Report thresholds and derived judgements do
+  not belong in the evidence tables.
+- Report code reads stored evidence and must not launch tools, import live scanned source, or use a
+  stored metric to choose an exit status.
+- A local dirty run records that it is dirty but never archives its source or diff.
+- Run `marimo check src/carpet_scan/notebooks/history_report.py` after changing the report program,
+  then verify its emitted HTML contains no CDN/runtime dependency.

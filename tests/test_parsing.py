@@ -47,6 +47,7 @@ def test_parse_pyan_decodes_tooltips_across_subgraphs() -> None:
     reader = nodes["src__pkg__reader__read_tsv"]
     assert (reader.module, reader.name, reader.kind) == ("src.pkg.reader", "read_tsv", "function")
     assert reader.path == Path("/w/src/pkg/reader.py")
+    assert reader.lineno == 12
     assert ("src__pkg__api__load", "src__pkg__reader__read_tsv") in edges
 
 

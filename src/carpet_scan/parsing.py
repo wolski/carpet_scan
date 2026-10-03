@@ -60,7 +60,9 @@ def _decode_tooltip(node_id: str, tooltip: str) -> PyanNode | None:
     qualname, location, kind_line = parts[0], parts[1], parts[2]
     kind, module = kind_line.split(" in ", 1)
     name = qualname[len(module) + 1 :] if qualname.startswith(f"{module}.") else qualname
-    raw_path = location.rsplit(":", 1)[0] if ":" in location else location
+    raw_path, separator, raw_line = location.rpartition(":")
+    if not separator:
+        raw_path = location
     return PyanNode(
         node_id=node_id,
         qualname=qualname,
@@ -68,6 +70,7 @@ def _decode_tooltip(node_id: str, tooltip: str) -> PyanNode | None:
         name=name,
         kind=kind.strip(),
         path=Path(raw_path) if raw_path else None,
+        lineno=int(raw_line) if raw_line.isdigit() else 0,
     )
 
 

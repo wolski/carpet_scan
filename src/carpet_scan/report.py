@@ -8,9 +8,12 @@ from rich.console import Console
 from rich.table import Table
 
 from carpet_scan.model import (
+    COMMUNITY_SEED,
     FOLDER_DEPTH_WARN,
+    MIN_MODULES_FOR_COHESION,
     MIN_PUBLICS_FOR_SURFACE_REPORT,
     VULTURE_MIN_CONFIDENCE,
+    CohesionResult,
     DepthRow,
     FolderRow,
     PrivateRow,
@@ -20,7 +23,7 @@ from carpet_scan.model import (
 )
 
 
-def _short(dotted: str, package: str) -> str:
+def short_name(dotted: str, package: str) -> str:
     """Drop the `src.<package>.` prefix pyan3 emits; it is on every row."""
     for prefix in (f"src.{package}.", f"{package}.", "src."):
         if dotted.startswith(prefix):
@@ -57,7 +60,7 @@ def _surface_table(rows: list[SurfaceRow], config: ScanConfig) -> Table:
     _numeric(table, "pub", "tests", "home", "gone", "cc")
     for row in rows[: config.top]:
         table.add_row(
-            _short(row.module, config.package),
+            short_name(row.module, config.package),
             str(row.publics),
             str(len(row.tests_only)) if row.tests_only else "0",
             f"[bold]{len(row.home_only)}[/]" if row.home_only else "0",
@@ -87,7 +90,7 @@ def _depth_table(rows: list[DepthRow], config: ScanConfig) -> Table:
     table.add_column("chain ends at", overflow="fold", style="dim")
     for row in rows[: config.top]:
         table.add_row(
-            _short(row.module, config.package),
+            short_name(row.module, config.package),
             str(row.depth),
             f"{row.trivial}/{len(row.chain)}",
             row.chain[-1] if row.chain else "",
@@ -111,10 +114,37 @@ def _folder_table(rows: list[FolderRow], config: ScanConfig) -> Table:
     _numeric(table, "mods", "edges", "depth")
     for row in rows:
         table.add_row(
-            _short(row.folder, config.package) or config.package,
+            short_name(row.folder, config.package) or config.package,
             str(row.modules),
             str(row.edges),
             f"[bold]{row.depth}[/]" if row.depth >= FOLDER_DEPTH_WARN else str(row.depth),
+        )
+    return table
+
+
+def _cohesion_table(result: CohesionResult, config: ScanConfig) -> Table:
+    table = Table(
+        title="Folder cohesion vs the graph's own clusters (Check 6)",
+        box=box.ROUNDED,
+        title_justify="left",
+        header_style="bold",
+        caption_justify="left",
+        caption=(
+            f"grimp {config.versions.grimp} import graph, networkx Louvain communities; "
+            f"dim below {MIN_MODULES_FOR_COHESION} modules, where the ratio is noise"
+        ),
+    )
+    table.add_column("folder", overflow="fold")
+    _numeric(table, "mods", "in", "out", "cohesion")
+    for row in result.rows:
+        measurable = row.modules >= MIN_MODULES_FOR_COHESION
+        table.add_row(
+            short_name(row.folder, config.package) or config.package,
+            str(row.modules),
+            str(row.internal),
+            str(row.external),
+            f"{row.cohesion:.0%}" if measurable else "n/a",
+            style=None if measurable else "dim",
         )
     return table
 
@@ -125,8 +155,11 @@ def render_terminal(
     folders: list[FolderRow],
     dead: list[VultureFinding],
     private: list[PrivateRow],
+    cohesion: CohesionResult,
     config: ScanConfig,
 ) -> None:
+    surface = [row for row in surface if row.publics >= MIN_PUBLICS_FOR_SURFACE_REPORT]
+    depth = [row for row in depth if row.depth >= config.warn_depth]
     console = Console()
     console.print()
     console.print(f"[bold]carpet-scan[/] {config.command}")
@@ -136,6 +169,14 @@ def render_terminal(
     console.print(_depth_table(depth, config))
     console.print()
     console.print(_folder_table(folders, config))
+    console.print()
+    console.print(_cohesion_table(cohesion, config))
+    console.print(
+        f"[bold]modularity[/] folders Q={cohesion.q_folders:.3f} vs "
+        f"detected Q={cohesion.q_communities:.3f} across {len(cohesion.communities)} "
+        f"communities; {cohesion.intra}/{cohesion.edges} edges "
+        f"({cohesion.intra_share:.0%}) stay inside a folder"
+    )
     kinds: dict[str, int] = {}
     for finding in dead:
         kinds[finding.kind] = kinds.get(finding.kind, 0) + 1
@@ -282,14 +323,14 @@ def _markdown_surface(rows: list[SurfaceRow], config: ScanConfig) -> list[str]:
     ]
     for r in rows:
         out.append(
-            f"| `{_short(r.module, config.package)}` | {r.publics} | {len(r.tests_only)} | "
+            f"| `{short_name(r.module, config.package)}` | {r.publics} | {len(r.tests_only)} | "
             f"{len(r.home_only)} | {len(r.unused)} | {r.max_complexity} | {r.maintainability:.0f} |"
         )
     out += ["", "### Names", ""]
     for r in rows:
         if not (r.home_only or r.unused or r.tests_only or r.modifiers):
             continue
-        out.append(f"**`{_short(r.module, config.package)}`**")
+        out.append(f"**`{short_name(r.module, config.package)}`**")
         out.append("")
         for label, names in (
             ("used only inside this file, make private", r.home_only),
@@ -344,7 +385,7 @@ def _markdown_private(rows: list[PrivateRow], config: ScanConfig) -> list[str]:
     for r in rows:
         names = ", ".join(f"`{n}`" for n in r.names)
         out.append(
-            f"| `{_short(r.module, config.package)}` | {r.attribute} | {r.imported} | "
+            f"| `{short_name(r.module, config.package)}` | {r.attribute} | {r.imported} | "
             f"{r.total} | {names} |"
         )
     return out
@@ -386,7 +427,7 @@ def _markdown_graphs(
     for r in depth:
         chain = " -> ".join(f"`{c}`" for c in r.chain)
         out.append(
-            f"| `{_short(r.module, config.package)}` | {r.depth} | "
+            f"| `{short_name(r.module, config.package)}` | {r.depth} | "
             f"{r.trivial}/{len(r.chain)} | {chain} |"
         )
     out += [
@@ -413,7 +454,7 @@ def _markdown_graphs(
         "| --- | --- | --- | --- | --- |",
     ]
     for f in folders:
-        label = _short(f.folder, config.package) or config.package
+        label = short_name(f.folder, config.package) or config.package
         out.append(
             f"| `{label}` | {f.modules} | {f.edges} | {f.depth} | "
             f"{' -> '.join(f'`{c}`' for c in f.chain)} |"
@@ -466,6 +507,8 @@ def render_markdown(
     private: list[PrivateRow],
     config: ScanConfig,
 ) -> str:
+    surface = [row for row in surface if row.publics >= MIN_PUBLICS_FOR_SURFACE_REPORT]
+    depth = [row for row in depth if row.depth >= config.warn_depth]
     header = [
         "# Carpet diagnostics",
         "",
@@ -482,6 +525,139 @@ def render_markdown(
         + _markdown_graphs(depth, folders, config)
         + _markdown_dead(dead, config)
     )
+    return "\n".join(header + body) + "\n"
+
+
+def _markdown_cohesion_folders(result: CohesionResult, config: ScanConfig) -> list[str]:
+    out = [
+        "## Cohesion per folder",
+        "",
+        "*Cross-reference: Check 6.* "
+        "One row per folder: of every import edge with at least one end inside it, the share that"
+        " stays inside. Direction is deliberately ignored — a folder everything imports and a"
+        " folder that imports everything are equally uncohesive, and which end initiated is a"
+        " question for the layering gate, not this table.",
+        *_columns(
+            ("folder", "package path, common prefix stripped"),
+            ("modules", "modules that are files; package nodes are excluded"),
+            ("internal", "edges with both ends in this folder"),
+            ("external", "edges with exactly one end in it, either direction"),
+            ("cohesion", "internal / (internal + external)"),
+        ),
+        *_generated_by(f"python -c \"import grimp; grimp.build_graph('{config.package}')\""),
+        "",
+        f"A folder holding fewer than {MIN_MODULES_FOR_COHESION} modules cannot have an internal"
+        " edge at all, so its ratio is reported as `n/a` rather than 0%.",
+        "",
+        "**Low cohesion is not automatically a defect.** An orchestration folder — CLI entry"
+        " points, workflows, adapters — earns its keep precisely by importing across the tree, and"
+        " will measure near zero however well it is written. Read this table for folders that"
+        " were *meant* to be cohesive units and are not.",
+        "",
+        "| folder | modules | internal | external | cohesion |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for row in result.rows:
+        label = short_name(row.folder, config.package) or config.package
+        ratio = f"{row.cohesion:.0%}" if row.modules >= MIN_MODULES_FOR_COHESION else "n/a"
+        out.append(f"| `{label}` | {row.modules} | {row.internal} | {row.external} | {ratio} |")
+    return out
+
+
+def _markdown_cohesion_clusters(result: CohesionResult, config: ScanConfig) -> list[str]:
+    out = [
+        "",
+        "## The clusters the graph actually has",
+        "",
+        "Community detection partitions the same graph without being shown the folder names, so"
+        " the result is what the imports say the modules are, independent of where they were"
+        " filed. Comparing the two partitions is the measurement:",
+        "",
+        "| partition | modularity Q |",
+        "| --- | --- |",
+        f"| the folders you declared | {result.q_folders:.3f} |",
+        f"| the graph's own best split ({len(result.communities)} communities) | "
+        f"{result.q_communities:.3f} |",
+        "",
+        f"{result.intra}/{result.edges} edges ({result.intra_share:.0%}) stay inside a folder.",
+        "",
+        "**A gap between the two Q values is a finding to triage, not a defect.** Modularity"
+        " rewards clustered topologies. A deliberately *layered* design cuts across features by"
+        " construction — every feature contributes a module to the adapter layer, one to the"
+        " workflow layer, and so on — so its folder partition will always score below a"
+        " clustering found by maximising modularity, no matter how disciplined the layering is."
+        " What the gap tells you is that folder membership and coupling are answering different"
+        " questions; whether that is intended is a judgement the numbers cannot make.",
+        "",
+        "What *is* worth acting on is a folder appearing in several clusters while its clusters"
+        " each have an obvious name — that is one folder holding two unrelated things, and the"
+        " split below says where the seam runs.",
+        *_generated_by(
+            f"python -c \"import grimp; grimp.build_graph('{config.package}')\"",
+            f'python -c "import networkx; networkx.community.louvain_communities(g,'
+            f' seed={COMMUNITY_SEED})"',
+        ),
+        "",
+        f"The community search is seeded (`seed={COMMUNITY_SEED}`) so unchanged code produces an"
+        " identical report; like the carpet report, this file carries no timestamp and is meant to"
+        " be diffed between runs.",
+        "",
+        "| # | modules | folders spanned | composition |",
+        "| --- | --- | --- | --- |",
+    ]
+    for index, community in enumerate(result.communities, start=1):
+        mix = ", ".join(f"`{name}` x{count}" for name, count in community.spread)
+        out.append(f"| {index} | {len(community.members)} | {community.folders} | {mix} |")
+
+    out += ["", "### Membership", ""]
+    for index, community in enumerate(result.communities, start=1):
+        out += [
+            f"**Community {index}** — {len(community.members)} modules, home `{community.home}`",
+            "",
+            *(f"- `{name}`" for name in community.members),
+            "",
+        ]
+
+    split = result.split_folders
+    out += [
+        "## Folders split across more than one cluster",
+        "",
+        "The seam to look at first. A folder listed here holds modules the import graph assigns to"
+        " different clusters — either two features sharing a folder, or one feature whose modules"
+        " genuinely belong to layers below and above it.",
+        "",
+    ]
+    if not split:
+        out.append("None: every folder falls entirely inside one cluster.")
+        return out
+    out += ["| folder | clusters it spans |", "| --- | --- |"]
+    out += [
+        f"| `{short_name(folder, config.package) or config.package}` | {pieces} |"
+        for folder, pieces in split
+    ]
+    return out
+
+
+def render_cohesion_markdown(result: CohesionResult, config: ScanConfig) -> str:
+    """The cohesion report, written beside the carpet report rather than inside it.
+
+    Kept a separate document because it answers a different question. The carpet report asks
+    whether a *module* has grown layers it does not need; this one asks whether the *folders*
+    correspond to anything in the import graph. They are read at different moments, by different
+    decisions, and merging them would bury a package-shaped finding inside a function-shaped one.
+    """
+    header = [
+        "# Folder cohesion",
+        "",
+        "Do the folders correspond to clusters in the import graph — more dependencies within a"
+        " folder than between folders? Like every number in the carpet report, these flag a",
+        "boundary for triage and never adjudicate one. Do not move a module to improve a ratio.",
+        "",
+        f"Scope: `{config.package}`, {sum(r.modules for r in result.rows)} modules and"
+        f" {result.edges} import edges between them.",
+        "",
+    ]
+    body = _markdown_cohesion_folders(result, config) + _markdown_cohesion_clusters(result, config)
     return "\n".join(header + body) + "\n"
 
 

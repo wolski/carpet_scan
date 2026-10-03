@@ -1,44 +1,47 @@
-"""Command-line entry point. Orders the four stages and nothing else."""
+"""Capture carpet evidence and render non-blocking code-shape reports."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import subprocess
+import sys
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
 import cyclopts
 from loguru import logger
 
-from carpet_scan.measure import depth_rows, folder_rows, private_rows, surface_rows
-from carpet_scan.model import IGNORED_DECORATORS, SURFACE_SKIP, ScanConfig, TreeLayout
-from carpet_scan.parsing import (
-    parse_pyan,
-    parse_radon_cc,
-    parse_radon_mi,
-    parse_ruff_private,
-    parse_vulture,
+from carpet_scan.derived import DerivedReport, derive_report
+from carpet_scan.evidence import (
+    SealedRun,
+    TargetRecord,
+    capture_evidence,
+    default_config,
+    seal_evidence,
 )
-from carpet_scan.report import render_html, render_markdown, render_terminal
-from carpet_scan.tools import (
-    ToolFailure,
-    infer_package,
-    run_pyan,
-    run_radon,
-    run_ruff_private,
-    run_vulture,
-    tool_versions,
+from carpet_scan.history import ingest_archive, latest_run_id, load_snapshot
+from carpet_scan.model import IGNORED_DECORATORS, SURFACE_SKIP, ScanConfig
+from carpet_scan.report import (
+    render_cohesion_markdown,
+    render_html,
+    render_markdown,
+    render_terminal,
 )
+from carpet_scan.targets import (
+    ProjectLayout,
+    github_target,
+    local_target,
+    project_layout,
+)
+from carpet_scan.tools import infer_package
 
 app = cyclopts.App(name="carpet-scan", help=__doc__)
 
 
 @dataclass
 class Tuning:
-    """Reporting thresholds and per-project calibration.
-
-    Flattened onto the command line by cyclopts, so these stay plain ``--warn-depth`` style
-    options while keeping the entry point's signature small.
-    """
+    """Reporting thresholds and per-project calibration."""
 
     warn_depth: int = 3
     """Intra-module call depth at or above which a module is listed."""
@@ -47,12 +50,88 @@ class Tuning:
     """Rows per terminal table. The report always lists every row."""
 
     surface_skip: tuple[str, ...] = SURFACE_SKIP
-    """Subpackages omitted from Check 2: their publics are decorator-registered entry points,
-    which a uses-graph cannot see."""
+    """Subpackages omitted from the public-surface derivation."""
 
     ignore_decorators: str = IGNORED_DECORATORS
-    """Comma-separated decorators whose functions vulture must not report. Defaults suit pydantic
-    and cyclopts; Click, FastAPI or Celery projects need their own."""
+    """Comma-separated decorators whose functions vulture must not report."""
+
+
+@dataclass(frozen=True)
+class Acquisition:
+    """Published and normalized evidence from one project scan."""
+
+    database: Path
+    sealed: SealedRun
+    derived: DerivedReport
+
+
+def _configuration(layout: ProjectLayout, tuning: Tuning) -> ScanConfig:
+    return replace(
+        default_config(layout),
+        top=tuning.top,
+        warn_depth=tuning.warn_depth,
+        surface_skip=tuning.surface_skip,
+        ignore_decorators=tuning.ignore_decorators,
+    )
+
+
+def _acquire(
+    layout: ProjectLayout,
+    target: TargetRecord,
+    carpet_root: Path,
+    config: ScanConfig,
+) -> Acquisition:
+    started = datetime.now(UTC)
+    logger.info(f"capturing diagnostic evidence for {target.project_identity}")
+    producers = capture_evidence(layout, config)
+    sealed = seal_evidence(carpet_root, started, target, config, producers)
+    database = carpet_root / "history.sqlite3"
+    run_id = ingest_archive(database, sealed.archive)
+    snapshot = load_snapshot(database, run_id)
+    derived = derive_report(snapshot)
+    statuses = ", ".join(f"{item.producer}={item.status}" for item in producers)
+    logger.info(f"evidence run {run_id}: {statuses}")
+    logger.info(f"archive: {sealed.archive}")
+    logger.info(f"history: {database}")
+    return Acquisition(database=database, sealed=sealed, derived=derived)
+
+
+def _write_legacy_reports(
+    acquisition: Acquisition,
+    report: Path,
+    cohesion: Path,
+    html: Path | None,
+) -> None:
+    derived = acquisition.derived
+    render_terminal(
+        derived.surface,
+        derived.depth,
+        derived.folders,
+        derived.dead,
+        derived.private,
+        derived.cohesion,
+        derived.config,
+    )
+    markdown = render_markdown(
+        derived.surface,
+        derived.depth,
+        derived.folders,
+        derived.dead,
+        derived.private,
+        derived.config,
+    )
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(markdown, encoding="utf-8")
+    cohesion.parent.mkdir(parents=True, exist_ok=True)
+    cohesion.write_text(
+        render_cohesion_markdown(derived.cohesion, derived.config), encoding="utf-8"
+    )
+    if html is not None:
+        html.parent.mkdir(parents=True, exist_ok=True)
+        html.write_text(render_html(markdown, derived.config), encoding="utf-8")
+    logger.info(
+        f"compatibility reports: {report}, {cohesion}" + (f", {html}" if html is not None else "")
+    )
 
 
 @app.default
@@ -62,85 +141,139 @@ def scan(
     tests: Path | None = None,
     package: str | None = None,
     report: Path = Path("build/carpet-report.md"),
+    cohesion: Path = Path("build/cohesion-report.md"),
     html: Path | None = None,
     tuning: Annotated[Tuning, cyclopts.Parameter(name="*")] | None = None,
 ) -> None:
-    """Aggregate pyan3, vulture, radon, grimp and ruff into carpet diagnostics. Always exits 0.
+    """Scan the current project, store its evidence, and write compatibility reports.
 
-    Parameters
-    ----------
-    src
-        Source root, e.g. ``src`` or ``lib``.
-    tests
-        Test root. Included in the graph so "referenced only from tests" is distinguishable.
-    package
-        Importable package name, for grimp's module graph. Inferred from ``src`` when it holds
-        exactly one package directory.
-    report
-        Markdown report path, holding the detail the terminal tables omit.
-    html
-        Optional self-contained HTML rendering of the same report, for reading the wide tables
-        in a browser. The Markdown stays the diffable artifact.
+    This default command preserves the original ``carpet-scan src --tests tests`` interface.
+    New automation should prefer ``scan-folder`` or ``scan-github`` so the target is explicit.
+    Diagnostic values never affect this command's exit status.
     """
+    project = Path.cwd().resolve()
+    selected_package = package or infer_package(src)
+    layout = ProjectLayout(
+        project=project,
+        src=src.resolve(),
+        tests=tests.resolve() if tests is not None else None,
+        package=selected_package,
+    )
     tuning = tuning or Tuning()
-    package = package or infer_package(src)
-    report.parent.mkdir(parents=True, exist_ok=True)
-    logger.info("running pyan3, vulture, radon, grimp, ruff")
-
-    try:
-        nodes, edges = parse_pyan(run_pyan(src, tests, report.parent / "pyan.dot"))
-    except ToolFailure as failure:
-        logger.error(f"{failure}")
-        logger.warning("skipping the public-surface and call-depth checks; the rest still run")
-        nodes, edges = {}, []
-    dead = parse_vulture(run_vulture(src, tests, tuning.ignore_decorators))
-    complexity = parse_radon_cc(run_radon(src, "cc"))
-    maintainability = parse_radon_mi(run_radon(src, "mi"))
-    private = private_rows(parse_ruff_private(run_ruff_private(src, tests)))
-
-    layout = TreeLayout.of(src, tests)
-    dead_keys = {(f.path.resolve(), f.name) for f in dead}
-    surface, skipped = surface_rows(
-        nodes,
-        edges,
-        dead_keys,
-        complexity,
-        maintainability,
-        frozenset(tuning.surface_skip),
+    target = local_target(project)
+    acquisition = _acquire(
         layout,
+        TargetRecord(
+            kind="folder",
+            project_identity=f"folder:{project}",
+            project_path=str(project),
+            repository_url=None,
+            commit_sha=None,
+            head_sha=target.head_sha,
+            dirty=target.dirty,
+        ),
+        project / ".carpet",
+        _configuration(layout, tuning),
     )
-    depth = depth_rows(nodes, edges, complexity, tuning.warn_depth, layout)
-    folders = folder_rows(package)
+    _write_legacy_reports(acquisition, report, cohesion, html)
 
-    config = ScanConfig(
-        src=src,
-        tests=tests,
-        package=package,
-        top=tuning.top,
-        warn_depth=tuning.warn_depth,
-        modules=len({n.module for n in nodes.values()}),
-        versions=tool_versions(),
-        surface_skip=tuning.surface_skip,
-        skipped=skipped,
-        ignore_decorators=tuning.ignore_decorators,
+
+@app.command
+def scan_folder(
+    project: Path,
+    *,
+    tuning: Annotated[Tuning, cyclopts.Parameter(name="*")] | None = None,
+) -> None:
+    """Capture one local project folder, including its current uncommitted state."""
+    target = local_target(project)
+    layout = project_layout(target.project)
+    acquisition = _acquire(
+        layout,
+        TargetRecord(
+            kind="folder",
+            project_identity=f"folder:{target.project}",
+            project_path=str(target.project),
+            repository_url=None,
+            commit_sha=None,
+            head_sha=target.head_sha,
+            dirty=target.dirty,
+        ),
+        target.project / ".carpet",
+        _configuration(layout, tuning or Tuning()),
+    )
+    _write_legacy_reports(
+        acquisition,
+        acquisition.sealed.directory / "carpet-report.md",
+        acquisition.sealed.directory / "cohesion-report.md",
+        None,
     )
 
-    render_terminal(surface, depth, folders, dead, private, config)
-    markdown = render_markdown(surface, depth, folders, dead, private, config)
-    report.write_text(markdown, encoding="utf-8")
-    if html is not None:
-        html.parent.mkdir(parents=True, exist_ok=True)
-        html.write_text(render_html(markdown, config), encoding="utf-8")
 
-    home = sum(len(r.home_only) for r in surface)
-    gone = sum(len(r.unused) for r in surface)
-    logger.info(
-        f"{config.modules} modules | {home} publics used only at home, {gone} confirmed dead "
-        f"| {len(depth)} at call depth >= {tuning.warn_depth} | {len(dead)} vulture findings"
-        f" | {sum(r.total for r in private)} cross-module private accesses"
-    )
-    written = f"{report}" if html is None else f"{report}, {html}"
-    logger.info(f"full report: {written} — flags are for triage, never act on a number alone")
+@app.command
+def scan_github(
+    repository_url: str,
+    commit: str,
+    *,
+    workdir: Path,
+    tuning: Annotated[Tuning, cyclopts.Parameter(name="*")] | None = None,
+) -> None:
+    """Capture one exact GitHub revision in a reusable managed project folder."""
+    with github_target(repository_url, commit, workdir) as target:
+        layout = project_layout(target.checkout)
+        acquisition = _acquire(
+            layout,
+            TargetRecord(
+                kind="github",
+                project_identity=target.repository_url,
+                project_path=str(target.checkout),
+                repository_url=target.repository_url,
+                commit_sha=target.commit_sha,
+                head_sha=target.commit_sha,
+                dirty=False,
+            ),
+            target.managed_project / ".carpet",
+            _configuration(layout, tuning or Tuning()),
+        )
+        _write_legacy_reports(
+            acquisition,
+            acquisition.sealed.directory / "carpet-report.md",
+            acquisition.sealed.directory / "cohesion-report.md",
+            None,
+        )
+
+
+@app.command
+def ingest(database: Path, archive: Path) -> None:
+    """Rebuild one normalized run from an immutable evidence ZIP."""
+    run_id = ingest_archive(database, archive)
+    logger.info(f"ingested evidence run {run_id} into {database}")
+
+
+@app.command
+def report(
+    database: Path,
+    *,
+    run_id: str | None = None,
+    output: Path = Path("carpet-report.html"),
+) -> None:
+    """Export one stored evidence run as self-contained marimo HTML."""
+    selected = run_id or latest_run_id(database)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    notebook = Path(__file__).parent / "notebooks" / "history_report.py"
+    command = [
+        sys.executable,
+        str(notebook),
+        "--database",
+        str(database.resolve()),
+        "--run-id",
+        selected,
+        "--output",
+        str(output.resolve()),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"marimo report failed: {result.stderr[-1000:]}")
+    logger.info(f"rendered stored run {selected}: {output}")
 
 
 if __name__ == "__main__":

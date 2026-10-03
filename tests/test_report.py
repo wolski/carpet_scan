@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from carpet_scan.measure import cohesion_result
 from carpet_scan.model import (
+    COMMUNITY_SEED,
     DepthRow,
     FolderRow,
     PrivateRow,
@@ -15,7 +17,12 @@ from carpet_scan.model import (
     ToolVersions,
     VultureFinding,
 )
-from carpet_scan.report import render_html, render_markdown
+from carpet_scan.report import (
+    render_cohesion_markdown,
+    render_html,
+    render_markdown,
+    render_terminal,
+)
 
 CONFIG = ScanConfig(
     src=Path("src"),
@@ -116,3 +123,67 @@ def test_html_is_self_contained_and_renders_the_tables(markdown: str) -> None:
     # 5 payload tables, 5 column glossaries, the Method tool list, the bucket derivation.
     assert html.count("<table>") == 12
     assert "<td>" in html and "| module |" not in html, "markdown tables became real tables"
+
+
+COHESION = cohesion_result(
+    ["pkg.rules.a", "pkg.rules.b", "pkg.workflows.c"],
+    [("pkg.rules.a", "pkg.rules.b"), ("pkg.workflows.c", "pkg.rules.a")],
+    "pkg",
+)
+
+
+@pytest.fixture
+def cohesion_markdown() -> str:
+    return render_cohesion_markdown(COHESION, CONFIG)
+
+
+def test_cohesion_report_is_a_separate_document(cohesion_markdown: str, markdown: str) -> None:
+    """It answers a packaging question, not the per-module one. Merging them would bury a
+    folder-shaped finding inside a function-shaped report."""
+    assert cohesion_markdown.startswith("# Folder cohesion")
+    assert "## Cohesion per folder" in cohesion_markdown
+    assert "Folder cohesion" not in markdown
+
+
+def test_cohesion_report_states_both_partitions_and_the_seed(cohesion_markdown: str) -> None:
+    """The gap between the two Q values is the measurement, and the seed is what makes two runs
+    over unchanged code diffable."""
+    assert "modularity Q" in cohesion_markdown
+    assert "the folders you declared" in cohesion_markdown
+    assert f"seed={COMMUNITY_SEED}" in cohesion_markdown
+
+
+def test_cohesion_report_warns_that_a_layered_design_scores_low_by_construction(
+    cohesion_markdown: str,
+) -> None:
+    """Without this the report reads as an instruction to reorganise, which is the exact move
+    every other number in this tool exists to discourage."""
+    assert "not automatically a defect" in cohesion_markdown
+    assert "layered" in cohesion_markdown
+
+
+def test_cohesion_report_names_the_modules_not_only_the_counts(cohesion_markdown: str) -> None:
+    """A count says a folder is split; only the membership says where the seam runs."""
+    assert "### Membership" in cohesion_markdown
+    assert "`rules.a`" in cohesion_markdown
+
+
+def test_cohesion_report_carries_no_timestamp(cohesion_markdown: str) -> None:
+    """Same reason as the carpet report: it is meant to be diffed between runs."""
+    assert "diffed between runs" in cohesion_markdown
+    for row in cohesion_markdown.splitlines():
+        assert "202" not in row.replace("2026", ""), f"possible date in: {row}"
+
+
+def test_terminal_render_survives_every_table() -> None:
+    """A smoke test with a reason: the Rich tables are built from f-strings carrying markup tags,
+    and an empty style produced `[]...[/]`, which raises only at render time. The Markdown tests
+    cannot see that — nothing else exercises the terminal path."""
+    render_terminal(SURFACE, DEPTH, FOLDERS, DEAD, PRIVATE, COHESION, CONFIG)
+
+
+def test_terminal_render_survives_a_folder_too_small_to_measure() -> None:
+    """The `n/a` row takes the other branch of the style choice, which is the one that broke."""
+    single = cohesion_result(["pkg.a.one", "pkg.b.two"], [("pkg.a.one", "pkg.b.two")], "pkg")
+
+    render_terminal(SURFACE, DEPTH, FOLDERS, DEAD, PRIVATE, single, CONFIG)

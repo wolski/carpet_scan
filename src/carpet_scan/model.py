@@ -9,6 +9,12 @@ MIN_PUBLICS_FOR_SURFACE_REPORT = 4
 MIN_NAMES_SHARING_A_MODIFIER = 3
 FOLDER_DEPTH_WARN = 3
 VULTURE_MIN_CONFIDENCE = 60
+# Louvain is randomised. A fixed seed keeps two runs over unchanged code byte-identical, which
+# the Markdown report depends on — it carries no timestamp so that it can be diffed between runs.
+COMMUNITY_SEED = 0
+# Below this, a folder's cohesion is noise rather than a measurement: one edge either way moves
+# the ratio across the whole range.
+MIN_MODULES_FOR_COHESION = 2
 CALLABLE_KINDS = frozenset({"function", "method", "classmethod"})
 # Defaults cover pydantic validators and cyclopts commands. Projects on Click, FastAPI or
 # Celery need their own set — pass --ignore-decorators.
@@ -41,6 +47,7 @@ class PyanNode:
     name: str
     kind: str
     path: Path | None
+    lineno: int = 0
 
     def tree(self, layout: TreeLayout) -> str:
         """Which of the scanned roots this entity belongs to.
@@ -99,6 +106,8 @@ class ToolVersions:
     radon: str
     grimp: str
     ruff: str
+    networkx: str = "unknown"
+    carpet_scan: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -189,3 +198,79 @@ class FolderRow:
     edges: int
     depth: int
     chain: list[str]
+
+
+@dataclass(frozen=True)
+class CohesionRow:
+    """One folder's share of import edges that stay inside it.
+
+    ``external`` counts every edge with exactly one end in the folder, in either direction, so
+    a folder that is imported everywhere and one that imports everything read the same. The
+    distinction that matters here is inside versus outside, not who initiated.
+    """
+
+    folder: str
+    modules: int
+    internal: int
+    external: int
+
+    @property
+    def total(self) -> int:
+        return self.internal + self.external
+
+    @property
+    def cohesion(self) -> float:
+        return self.internal / self.total if self.total else 0.0
+
+
+@dataclass(frozen=True)
+class Community:
+    """One cluster the import graph actually has, found without reference to folder names."""
+
+    members: list[str]
+    spread: list[tuple[str, int]] = field(default_factory=list[tuple[str, int]])
+
+    @property
+    def folders(self) -> int:
+        """How many folders this one cluster is spread across. 1 means folder and cluster agree."""
+        return len(self.spread)
+
+    @property
+    def home(self) -> str:
+        """The folder holding most of this cluster — the name it would have if it were one."""
+        return self.spread[0][0] if self.spread else ""
+
+
+@dataclass(frozen=True)
+class CohesionResult:
+    """Whether the declared folders are the clusters the import graph has.
+
+    ``q_folders`` scores the partition the folder tree declares; ``q_communities`` scores the
+    best partition the graph itself admits. The gap between them is the measurement — a large
+    one means the packaging and the coupling disagree, which is a finding to triage and not a
+    defect on its own: a deliberately layered design partitions across features and will always
+    score below a clustering found by maximising modularity.
+    """
+
+    rows: list[CohesionRow]
+    communities: list[Community]
+    edges: int
+    intra: int
+    q_folders: float
+    q_communities: float
+
+    @property
+    def intra_share(self) -> float:
+        return self.intra / self.edges if self.edges else 0.0
+
+    @property
+    def split_folders(self) -> list[tuple[str, int]]:
+        """Folders whose modules land in more than one cluster, worst first."""
+        counts: dict[str, int] = {}
+        for community in self.communities:
+            for folder, _ in community.spread:
+                counts[folder] = counts.get(folder, 0) + 1
+        return sorted(
+            ((folder, pieces) for folder, pieces in counts.items() if pieces > 1),
+            key=lambda item: (-item[1], item[0]),
+        )

@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import grimp
 import networkx as nx
 
 from carpet_scan.model import (
     CALLABLE_KINDS,
+    COMMUNITY_SEED,
     MIN_NAMES_SHARING_A_MODIFIER,
-    MIN_PUBLICS_FOR_SURFACE_REPORT,
+    CohesionResult,
+    CohesionRow,
+    Community,
     DepthRow,
     FolderRow,
     PrivateAccess,
@@ -107,8 +111,6 @@ def surface_rows(
         if any(f".{part}." in f"{module}." for part in skip):
             omitted += 1
             continue
-        if len(members) < MIN_PUBLICS_FOR_SURFACE_REPORT:
-            continue
         tests_only: list[str] = []
         home_only: list[str] = []
         unused: list[str] = []
@@ -144,7 +146,6 @@ def depth_rows(
     nodes: dict[str, PyanNode],
     edges: list[tuple[str, str]],
     complexity: dict[Path, list[RadonBlock]],
-    warn: int,
     layout: TreeLayout,
 ) -> list[DepthRow]:
     """Call depth inside each src module, over pyan3 edges between its own callables."""
@@ -168,8 +169,6 @@ def depth_rows(
             sorted((a, b) for a, b in edges if a in member_set and b in member_set)
         )
         depth, chain = _longest_path(graph)
-        if depth < warn:
-            continue
         path = _resolve(callables[members[0]].path)
         simple = {b.name for b in complexity.get(path, []) if b.complexity == 1}
         names = [callables[n].name for n in chain]
@@ -207,11 +206,143 @@ def private_rows(accesses: list[PrivateAccess]) -> list[PrivateRow]:
     return sorted(rows, key=lambda r: (-r.imported, -r.total, r.module))
 
 
-def folder_rows(package: str) -> list[FolderRow]:
+def import_graph(package: str) -> grimp.ImportGraph:
+    """The module import graph. One build serves both Check 5 and the cohesion report."""
+    return grimp.build_graph(package)
+
+
+def leaf_imports(graph: grimp.ImportGraph) -> tuple[list[str], list[tuple[str, str]]]:
+    """Modules that are files, and the import edges between them.
+
+    Package nodes are dropped: ``__init__.py`` is kept empty by convention, so a package node
+    contributes a member with no edges and would dilute every ratio computed from the graph.
+    """
+    everything = set(graph.modules)
+    packages = {
+        parent
+        for module in everything
+        for parent in [module.rsplit(".", 1)[0]]
+        if parent in everything
+    }
+    leaves = sorted(everything - packages)
+    known = set(leaves)
+    edges = [
+        (module, imported)
+        for module in leaves
+        for imported in sorted(graph.find_modules_directly_imported_by(module))
+        if imported in known and imported != module
+    ]
+    return leaves, edges
+
+
+def folder_of(module: str, package: str) -> str:
+    """The folder a module lives in, nested ones included, e.g. ``params.parsers``."""
+    parts = module.removeprefix(f"{package}.").split(".")
+    return ".".join(parts[:-1]) if len(parts) > 1 else "<root>"
+
+
+def _modularity(graph: nx.Graph[str], partition: list[set[str]]) -> float:
+    """How much better than chance a partition explains the edges, on networkx's scale.
+
+    Wrapped only to confine the cast: networkx ships no return type for ``modularity``, and
+    letting an unknown propagate into ``CohesionResult`` would silently untype both fields.
+    """
+    if graph.number_of_edges() == 0:
+        return 0.0
+    return cast(float, nx.community.modularity(graph, partition))
+
+
+def cohesion_result(
+    modules: list[str],
+    edges: list[tuple[str, str]],
+    package: str,
+) -> CohesionResult:
+    """Compare the folder partition against the clusters the import graph actually has.
+
+    Takes plain module names and edges rather than a grimp object so the measurement is
+    testable without an importable package on disk; ``leaf_imports`` is the adapter that
+    supplies them.
+
+    The community search is seeded so two runs over unchanged code produce identical reports —
+    the Markdown is meant to be diffed, and an unseeded Louvain pass would show spurious
+    movement in the cluster tables on every run.
+    """
+    graph: nx.Graph[str] = nx.Graph()
+    graph.add_nodes_from(modules)
+    graph.add_edges_from(edges)
+    partition = [
+        set(group) for group in nx.community.louvain_communities(graph, seed=COMMUNITY_SEED)
+    ]
+    return cohesion_result_for_partition(modules, edges, package, partition)
+
+
+def cohesion_result_for_partition(
+    modules: list[str],
+    edges: list[tuple[str, str]],
+    package: str,
+    partition: list[set[str]],
+) -> CohesionResult:
+    """Calculate folder cohesion from an already-recorded graph partition."""
+    folder = {module: folder_of(module, package) for module in modules}
+    internal: dict[str, int] = {}
+    external: dict[str, int] = {}
+    size: dict[str, int] = {}
+    for module in modules:
+        size[folder[module]] = size.get(folder[module], 0) + 1
+    for source, target in edges:
+        if folder[source] == folder[target]:
+            internal[folder[source]] = internal.get(folder[source], 0) + 1
+        else:
+            for side in (source, target):
+                external[folder[side]] = external.get(folder[side], 0) + 1
+
+    rows = [
+        CohesionRow(
+            folder=name,
+            modules=count,
+            internal=internal.get(name, 0),
+            external=external.get(name, 0),
+        )
+        for name, count in size.items()
+    ]
+    rows.sort(key=lambda row: (-row.cohesion, -row.modules, row.folder))
+
+    undirected: nx.Graph[str] = nx.Graph()
+    undirected.add_nodes_from(modules)
+    for source, target in edges:
+        weight = undirected.edges.get((source, target), {}).get("weight", 0)
+        undirected.add_edge(source, target, weight=weight + 1)
+
+    by_folder: dict[str, set[str]] = {}
+    for module in modules:
+        by_folder.setdefault(folder[module], set()).add(module)
+    communities: list[Community] = []
+    for members in partition:
+        spread: dict[str, int] = {}
+        for module in members:
+            spread[folder[module]] = spread.get(folder[module], 0) + 1
+        communities.append(
+            Community(
+                members=sorted(module.removeprefix(f"{package}.") for module in members),
+                spread=sorted(spread.items(), key=lambda item: (-item[1], item[0])),
+            )
+        )
+    communities.sort(key=lambda community: (-len(community.members), community.home))
+
+    return CohesionResult(
+        rows=rows,
+        communities=communities,
+        edges=len(edges),
+        intra=sum(internal.values()),
+        q_folders=_modularity(undirected, list(by_folder.values())),
+        q_communities=_modularity(undirected, partition),
+    )
+
+
+def folder_rows(modules: list[str], edges: list[tuple[str, str]]) -> list[FolderRow]:
     """Sibling-import depth per folder, from grimp's module graph."""
-    graph = grimp.build_graph(package)
     members: dict[str, list[str]] = {}
-    for module in sorted(graph.modules):
+    for module in sorted(modules):
         parent = module.rsplit(".", 1)[0] if "." in module else ""
         if parent:
             members.setdefault(parent, []).append(module)
@@ -221,10 +352,13 @@ def folder_rows(package: str) -> list[FolderRow]:
         siblings = set(group)
         digraph: nx.DiGraph[str] = nx.DiGraph()
         digraph.add_nodes_from(sorted(group))
-        for module in sorted(group):
-            for imported in sorted(graph.find_modules_directly_imported_by(module)):
-                if imported in siblings and imported != module:
-                    digraph.add_edge(module, imported)
+        digraph.add_edges_from(
+            sorted(
+                (module, imported)
+                for module, imported in edges
+                if module in siblings and imported in siblings and imported != module
+            )
+        )
         depth, chain = _longest_path(digraph)
         rows.append(
             FolderRow(

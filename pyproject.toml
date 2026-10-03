@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "carpet-scan"
 version = "0.1.0"
-description = "Carpet diagnostics: aggregates pyan3, vulture, radon, grimp and ruff into module-level quality tables and a Markdown/HTML report."
+description = "Capture lossless Python code-diagnostic evidence in SQLite and render non-blocking carpet reports."
 readme = "README.md"
 # 3.12 is the floor because PEP 695 `type` aliases are the newest syntax used here.
 # Kept as low as the code allows: this tool has to install into the environment of
@@ -33,6 +33,8 @@ dependencies = [
     # Markdown -> HTML for the optional browser rendering. Already present via rich; declared
     # directly because carpet_scan imports it.
     "markdown-it-py>=3",
+    # Report program and self-contained HTML export from stored evidence.
+    "marimo>=0.23,<1",
 ]
 
 [project.scripts]

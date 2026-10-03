@@ -16,13 +16,14 @@ resolution is implemented here** — every number traces to a named tool:
                  for "referenced nowhere", and decorator-aware, so cyclopts commands are not
                  reported.
 ``radon``        cyclomatic complexity per function and maintainability index per module.
-``grimp``        module import graph, used for folder shape.
+``grimp``        module import graph, used for folder shape and folder cohesion.
 ``ruff``         ``SLF001`` and ``PLC2701``: private names touched across a module boundary.
                  A private function whose only outside caller is its own test is how a carpet
                  survives a coverage gate.
 ===============  ===========================================================================
 
-``pydot`` parses the DOT; ``networkx`` computes longest paths and condenses cycles.
+``pydot`` parses the DOT; ``networkx`` computes longest paths, condenses cycles, and finds the
+import graph's own communities for the cohesion report.
 
 Everything here is a *gauge* — a measurement with no correct value, read for movement and triage.
 Declared contracts belong elsewhere: an ``import-linter`` ``layers`` contract either holds or does

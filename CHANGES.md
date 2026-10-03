@@ -3,6 +3,20 @@
 - 2026-08-28: Added the missing `LICENSE` file (MIT) and declared `license-files`, without which
   uv_build shipped wheels carrying no licence text.
 
+- 2026-08-13: Separate evidence acquisition from reporting. Local folders and exact GitHub commits
+  now produce checksummed raw ZIP archives and producer-native SQLite rows for pyan3, Vulture,
+  Radon, Ruff, Grimp, and NetworkX. Archives can rebuild normalized history without rerunning tools.
+  A marimo report program renders stored runs as offline self-contained HTML with source locations,
+  a dependency matrix, and call-chain diagrams. Display thresholds remain representation-only and
+  diagnostic values still never affect exit status.
+- 2026-08-13: Add Check 6, folder cohesion, written to its own `build/cohesion-report.md`. Reuses
+  the grimp graph Check 5 already builds and adds one networkx Louvain pass: per-folder
+  internal-vs-external edge share, plus the modularity of the declared folder partition against the
+  communities the graph itself has. Kept a separate document because it is a packaging question
+  rather than the per-module one, and the report says in as many words that a layered design scores
+  low by construction — the actionable finding is a folder split across clusters, not a low ratio.
+  Seeded so unchanged code yields an identical report. The measurement takes plain module names and
+  edges, so it is tested without an importable package on disk.
 - 2026-08-11: Add `make carpets` so the package scans itself. Clean on every check: 21 modules, no
   public function without an external caller, nothing at call depth >= 3, no dead code, no
   cross-module private access, worst folder import depth 2.

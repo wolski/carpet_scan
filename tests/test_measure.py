@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from carpet_scan.measure import depth_rows, name_modifiers, private_rows, surface_rows
+import grimp
+
+from carpet_scan.measure import (
+    cohesion_result,
+    depth_rows,
+    leaf_imports,
+    name_modifiers,
+    private_rows,
+    surface_rows,
+)
 from carpet_scan.model import PrivateAccess, PyanNode, RadonBlock, TreeLayout
 
 LAYOUT = TreeLayout.of(Path("src"), Path("tests"))
@@ -113,7 +122,8 @@ def test_depth_rows_measure_only_a_module_s_own_callables() -> None:
     ]
     complexity = {API: [RadonBlock(name=n, lineno=1, complexity=1, rank="A") for n in "abc"]}
 
-    (row,) = depth_rows(nodes, edges, complexity, 3, LAYOUT)
+    rows = depth_rows(nodes, edges, complexity, LAYOUT)
+    (row,) = [item for item in rows if item.module == "src.pkg.api"]
 
     assert (row.depth, row.chain) == (3, ["a", "b", "c", "d"])
     assert row.trivial == 3, "a, b and c are complexity 1; d has no radon block"
@@ -128,7 +138,7 @@ def test_depth_rows_survive_recursion() -> None:
         ("src__pkg__api__c", "src__pkg__api__b"),
     ]
 
-    (row,) = depth_rows(nodes, edges, {}, 1, LAYOUT)
+    (row,) = depth_rows(nodes, edges, {}, LAYOUT)
 
     assert row.depth == 1, "a -> {b, c}, the cycle condensed to one component"
 
@@ -152,8 +162,8 @@ def test_depth_rows_break_ties_canonically() -> None:
         ("src__pkg__api__b2", "src__pkg__api__c2"),
     ]
 
-    (chosen,) = depth_rows(nodes, forward, {}, 2, LAYOUT)
-    (reversed_order,) = depth_rows(nodes, list(reversed(forward)), {}, 2, LAYOUT)
+    (chosen,) = depth_rows(nodes, forward, {}, LAYOUT)
+    (reversed_order,) = depth_rows(nodes, list(reversed(forward)), {}, LAYOUT)
 
     assert chosen.chain == ["a", "b1", "c1"]
     assert reversed_order.chain == chosen.chain
@@ -174,3 +184,87 @@ def test_private_rows_group_by_the_module_doing_the_reaching() -> None:
     assert [r.module for r in rows] == ["tests.test_api", "src.pkg.other"], "imports rank first"
     assert (rows[0].attribute, rows[0].imported, rows[0].total) == (2, 1, 3)
     assert rows[0].names == ["_a", "_b"], "de-duplicated across the two hits on _a"
+
+
+def test_cohesion_counts_an_edge_for_both_folders_it_touches() -> None:
+    """Direction is not the question here. A folder everything imports and one that imports
+    everything are equally uncohesive, and which end initiated is the layering gate's business."""
+    modules = ["pkg.a.one", "pkg.a.two", "pkg.b.three"]
+    edges = [("pkg.a.one", "pkg.a.two"), ("pkg.a.one", "pkg.b.three")]
+
+    result = cohesion_result(modules, edges, "pkg")
+    by_folder = {row.folder: row for row in result.rows}
+
+    assert (by_folder["a"].internal, by_folder["a"].external) == (1, 1)
+    assert (by_folder["b"].internal, by_folder["b"].external) == (0, 1)
+    assert by_folder["a"].cohesion == 0.5
+    assert result.intra == 1, "the cross-folder edge is not counted as intra for either side"
+
+
+def test_cohesion_of_a_folder_with_no_possible_internal_edge_is_zero_not_undefined() -> None:
+    """A one-module folder cannot have an internal edge, so the ratio is meaningless rather than
+    bad. The report says `n/a`; the row still has to carry a usable number for sorting."""
+    result = cohesion_result(["pkg.a.one", "pkg.b.two"], [("pkg.a.one", "pkg.b.two")], "pkg")
+
+    assert all(row.modules == 1 for row in result.rows)
+    assert all(row.cohesion == 0.0 for row in result.rows)
+
+
+def test_communities_are_found_without_reference_to_folder_names() -> None:
+    """The whole point: two densely connected groups filed under three folders must come back as
+    two clusters, and the split must name the folder that straddles them."""
+    modules = [f"pkg.x.a{i}" for i in range(4)] + [f"pkg.y.b{i}" for i in range(4)]
+    edges = [(a, b) for a in modules[:4] for b in modules[:4] if a < b]
+    edges += [(a, b) for a in modules[4:] for b in modules[4:] if a < b]
+    edges.append(("pkg.x.a0", "pkg.y.b0"))
+
+    result = cohesion_result(modules, edges, "pkg")
+
+    assert len(result.communities) == 2
+    assert {c.home for c in result.communities} == {"x", "y"}
+    assert result.q_folders > 0, "folders that match the clusters score above chance"
+    assert result.split_folders == [], "no folder straddles a cluster boundary here"
+
+
+def test_a_folder_holding_two_unrelated_features_is_reported_as_split() -> None:
+    """The finding worth acting on, as opposed to the layered-architecture false positive."""
+    modules = ["pkg.mixed.a", "pkg.x.a1", "pkg.x.a2", "pkg.mixed.b", "pkg.y.b1", "pkg.y.b2"]
+    edges = [
+        ("pkg.mixed.a", "pkg.x.a1"),
+        ("pkg.x.a1", "pkg.x.a2"),
+        ("pkg.mixed.a", "pkg.x.a2"),
+        ("pkg.mixed.b", "pkg.y.b1"),
+        ("pkg.y.b1", "pkg.y.b2"),
+        ("pkg.mixed.b", "pkg.y.b2"),
+    ]
+
+    result = cohesion_result(modules, edges, "pkg")
+
+    assert result.split_folders == [("mixed", 2)]
+
+
+def test_cohesion_is_reproducible_across_runs() -> None:
+    """Louvain is randomised. The report carries no timestamp so it can be diffed, which only
+    works if unchanged input produces an identical partition."""
+    modules = [f"pkg.x.a{i}" for i in range(5)] + [f"pkg.y.b{i}" for i in range(5)]
+    edges = [(a, b) for a in modules[:5] for b in modules[:5] if a < b]
+    edges += [(a, b) for a in modules[5:] for b in modules[5:] if a < b]
+
+    first = cohesion_result(modules, edges, "pkg")
+    second = cohesion_result(list(reversed(modules)), list(reversed(edges)), "pkg")
+
+    assert [c.members for c in first.communities] == [c.members for c in second.communities]
+    assert first.q_communities == second.q_communities
+
+
+def test_leaf_imports_drops_package_nodes() -> None:
+    """Empty __init__.py files are the convention here, so a package node contributes a member
+    with no edges and would dilute every ratio computed from the graph."""
+    graph = grimp.build_graph("carpet_scan")
+
+    leaves, edges = leaf_imports(graph)
+
+    assert "carpet_scan" not in leaves
+    assert "carpet_scan.measure" in leaves
+    assert all(source in leaves and target in leaves for source, target in edges)
+    assert ("carpet_scan.derived", "carpet_scan.measure") in edges

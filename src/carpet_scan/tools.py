@@ -28,7 +28,7 @@ def _capture(command: list[str], *, tolerate: tuple[int, ...] = (0, 1, 3)) -> st
     return result.stdout
 
 
-def _tool(*args: str) -> list[str]:
+def tool_command(*args: str) -> list[str]:
     """Resolve a tool beside the running interpreter, falling back to ``PATH``.
 
     The tools are dependencies of this package, so they are installed in the same environment as
@@ -52,7 +52,7 @@ def run_pyan(src: Path, tests: Path | None, out: Path) -> str:
     that the inferred names will be wrong.
     """
     targets = [str(src), *([str(tests)] if tests else [])]
-    command = _tool("pyan3", *targets, "--root", ".", "--uses", "--no-defines", "--dot")
+    command = tool_command("pyan3", *targets, "--root", ".", "--uses", "--no-defines", "--dot")
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     if not result.stdout.strip():
         # pyan3 is fragile — it raises on some valid constructs, e.g. a lambda inside a list
@@ -66,7 +66,7 @@ def run_vulture(src: Path, tests: Path | None, ignored_decorators: str) -> str:
     """Dead code. Decorator-aware, so runtime-registered entry points are not reported."""
     targets = [str(src), *([str(tests)] if tests else [])]
     return _capture(
-        _tool(
+        tool_command(
             "vulture",
             *targets,
             "--min-confidence",
@@ -79,7 +79,7 @@ def run_vulture(src: Path, tests: Path | None, ignored_decorators: str) -> str:
 
 def run_radon(src: Path, metric: str) -> str:
     """`radon cc` or `radon mi` as JSON."""
-    return _capture(_tool("radon", metric, str(src), "-j"))
+    return _capture(tool_command("radon", metric, str(src), "-j"))
 
 
 def run_ruff_private(src: Path, tests: Path | None) -> str:
@@ -95,7 +95,7 @@ def run_ruff_private(src: Path, tests: Path | None) -> str:
     """
     targets = [str(src), *([str(tests)] if tests else [])]
     return _capture(
-        _tool(
+        tool_command(
             "ruff",
             "check",
             *targets,
@@ -144,4 +144,6 @@ def tool_versions() -> ToolVersions:
         radon=version("radon"),
         grimp=version("grimp"),
         ruff=version("ruff"),
+        networkx=version("networkx"),
+        carpet_scan=version("carpet-scan"),
     )
