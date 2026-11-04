@@ -30,20 +30,20 @@ The closest `AGENTS.md` wins. Explicit user instructions override this file.
 
 ## Dependency rules
 
-### MUST
+### Required
 
 - Declare every imported runtime dependency directly in `[project.dependencies]`.
 - Put tests, linting, typing, building, and documentation tools in dependency
   groups; optional user-facing capabilities belong in extras.
 - Update `pyproject.toml` and `uv.lock` together and run `make check`.
 
-### SHOULD
+### Recommended
 
 - Prefer the standard library, then an existing direct dependency, then a small,
   maintained, typed dependency.
 - Keep source independent of test, build, documentation, and CLI-only packages.
 
-### MUST NOT
+### Forbidden
 
 - Depend on unpinned branches or undeclared transitive dependencies.
 - Add parallel manifests, lockfiles, formatters, type checkers, or test runners.
